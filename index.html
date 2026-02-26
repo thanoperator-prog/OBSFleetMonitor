@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OBS Fleet Monitor</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- OBS WebSocket JS (v5) -->
+    <script src="https://cdn.jsdelivr.net/npm/obs-websocket-js@5.0.2/dist/obs-ws.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+        .pulsing-dot {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .3; }
+        }
+        
+        /* Custom Scrollbar for form */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-8">
+
+    <div class="max-w-7xl mx-auto">
+        <!-- Header -->
+        <header class="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
+            <div>
+                <h1 class="text-3xl font-bold flex items-center gap-3">
+                    <i data-lucide="radio" class="text-blue-500 w-8 h-8"></i>
+                    OBS Fleet Monitor
+                </h1>
+                <p class="text-slate-400 mt-1">Track internet and stream health across multiple PCs</p>
+            </div>
+            <button onclick="toggleModal(true)" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg font-medium flex items-center gap-2 transition-colors">
+                <i data-lucide="plus" class="w-5 h-5"></i> Add PC
+            </button>
+        </header>
+
+        <!-- Warning message if hosted on HTTPS (Browsers block WS on HTTPS) -->
+        <div id="https-warning" class="hidden mb-6 bg-yellow-500/10 border border-yellow-500/50 rounded-lg p-4 flex items-start gap-3">
+            <i data-lucide="alert-triangle" class="text-yellow-500 shrink-0"></i>
+            <div>
+                <h3 class="text-yellow-500 font-semibold">HTTPS Warning</h3>
+                <p class="text-yellow-200/80 text-sm mt-1">You are running this page on HTTPS. Modern browsers may block local WebSocket (ws://) connections due to mixed content rules. If connections fail, download this HTML file and open it locally (file://) or run it on a local HTTP server.</p>
+            </div>
+        </div>
+
+        <!-- Grid Container for PC Cards -->
+        <div id="fleet-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <!-- Cards will be injected here via JS -->
+        </div>
+
+        <!-- Empty State -->
+        <div id="empty-state" class="text-center py-20 hidden">
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-slate-800 mb-4">
+                <i data-lucide="server" class="w-8 h-8 text-slate-400"></i>
+            </div>
+            <h2 class="text-xl font-semibold mb-2">No PCs Added Yet</h2>
+            <p class="text-slate-400 max-w-md mx-auto mb-6">Start monitoring your network health by adding your first OBS broadcast PC to the fleet.</p>
+            <button onclick="toggleModal(true)" class="text-blue-400 hover:text-blue-300 font-medium">Add your first PC &rarr;</button>
+        </div>
+    </div>
+
+    <!-- Add PC Modal -->
+    <div id="add-modal" class="fixed inset-0 bg-slate-900/80 backdrop-blur-sm hidden flex items-center justify-center z-50 p-4">
+        <div class="bg-slate-800 rounded-xl border border-slate-700 w-full max-w-md shadow-2xl overflow-hidden">
+            <div class="px-6 py-4 border-b border-slate-700 flex justify-between items-center">
+                <h3 class="text-lg font-semibold">Add New OBS Instance</h3>
+                <button onclick="toggleModal(false)" class="text-slate-400 hover:text-white transition-colors">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            <form id="add-form" onsubmit="handleAddForm(event)" class="p-6 space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-slate-400 mb-1">Display Name</label>
+                    <input type="text" id="pc-name" required placeholder="e.g. Trainee Station 1" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500">
+                </div>
+                <div class="grid grid-cols-3 gap-4">
+                    <div class="col-span-2">
+                        <label class="block text-sm font-medium text-slate-400 mb-1">IP Address</label>
+                        <input type="text" id="pc-ip" required placeholder="192.168.1.100" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500">
+                    </div>
+                    <div class="col-span-1">
+                        <label class="block text-sm font-medium text-slate-400 mb-1">Port</label>
+                        <input type="number" id="pc-port" required value="4455" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-400 mb-1">WebSocket Password</label>
+                    <input type="password" id="pc-password" placeholder="Leave blank if none" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500">
+                </div>
+                <div class="pt-4 flex gap-3">
+                    <button type="button" onclick="toggleModal(false)" class="flex-1 px-4 py-2.5 bg-slate-700 hover:bg-slate-600 rounded-lg font-medium transition-colors">Cancel</button>
+                    <button type="submit" class="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors">Add PC</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Template for PC Card -->
+    <template id="card-template">
+        <div class="bg-slate-800 rounded-xl border border-slate-700 p-5 shadow-lg relative overflow-hidden group">
+            <!-- Top Strip for connection status -->
+            <div class="absolute top-0 left-0 w-full h-1 bg-slate-600 connection-strip transition-colors duration-300"></div>
+            
+            <div class="flex justify-between items-start mb-4 mt-1">
+                <div>
+                    <h3 class="font-bold text-lg pc-name-display">PC Name</h3>
+                    <p class="text-sm text-slate-400 flex items-center gap-1">
+                        <i data-lucide="network" class="w-3 h-3"></i> <span class="pc-ip-display">192.168.x.x:4455</span>
+                    </p>
+                </div>
+                <div class="flex flex-col items-end gap-2">
+                    <button class="delete-btn text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity p-1" title="Remove PC">
+                        <i data-lucide="trash-2" class="w-4 h-4"></i>
+                    </button>
+                    <span class="text-xs font-semibold px-2 py-1 rounded-full bg-slate-700 text-slate-300 flex items-center gap-1.5 connection-badge transition-colors duration-300">
+                        <div class="w-2 h-2 rounded-full bg-slate-400 status-dot"></div>
+                        <span class="status-text">Offline</span>
+                    </span>
+                </div>
+            </div>
+
+            <!-- Stream Status Banner -->
+            <div class="mb-5 bg-slate-900/50 rounded-lg p-3 flex items-center justify-between border border-slate-700/50">
+                <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 rounded-full bg-slate-600 stream-dot"></div>
+                    <span class="font-medium text-sm text-slate-300 stream-text">Not Streaming</span>
+                </div>
+                <div class="text-xs text-slate-500 uptime-display hidden">00:00:00</div>
+            </div>
+
+            <!-- Metrics Grid -->
+            <div class="grid grid-cols-2 gap-3">
+                <div class="bg-slate-900 rounded-lg p-3 border border-slate-700/50">
+                    <div class="text-xs text-slate-400 mb-1 flex items-center gap-1">
+                        <i data-lucide="activity" class="w-3 h-3"></i> Bitrate
+                    </div>
+                    <div class="font-mono text-lg font-semibold"><span class="metric-bitrate text-slate-300">0</span> <span class="text-xs text-slate-500 font-sans font-normal">kbps</span></div>
+                </div>
+                
+                <div class="bg-slate-900 rounded-lg p-3 border border-slate-700/50">
+                    <div class="text-xs text-slate-400 mb-1 flex items-center gap-1">
+                        <i data-lucide="alert-circle" class="w-3 h-3"></i> Dropped Frames
+                    </div>
+                    <div class="font-mono text-lg font-semibold"><span class="metric-dropped text-green-400">0</span></div>
+                </div>
+
+                <div class="bg-slate-900 rounded-lg p-3 border border-slate-700/50 col-span-2">
+                    <div class="flex justify-between items-center mb-2">
+                        <div class="text-xs text-slate-400 flex items-center gap-1">
+                            <i data-lucide="bar-chart-2" class="w-3 h-3"></i> Network Congestion
+                        </div>
+                        <div class="font-mono text-xs font-semibold"><span class="metric-congestion text-green-400">0%</span></div>
+                    </div>
+                    <div class="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                        <div class="congestion-bar bg-green-500 h-1.5 rounded-full transition-all duration-500" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Reconnecting Warning -->
+            <div class="reconnect-warning hidden mt-3 bg-yellow-500/20 text-yellow-500 border border-yellow-500/30 rounded-lg p-2 text-xs text-center flex items-center justify-center gap-1 font-medium">
+                <i data-lucide="wifi-off" class="w-3 h-3"></i> Stream Connection Dropped - Reconnecting...
+            </div>
+        </div>
+    </template>
+
+    <script>
+        // Global State
+        let fleet = []; // Array to store OBSNode instances
+        let savedConfigs = JSON.parse(localStorage.getItem('obs_fleet_configs')) || [];
+
+        // Check for HTTPS warning
+        if (window.location.protocol === 'https:') {
+            document.getElementById('https-warning').classList.remove('hidden');
+        }
+
+        // Initialize Icons
+        lucide.createIcons();
+
+        // Modal Logic
+        function toggleModal(show) {
+            const modal = document.getElementById('add-modal');
+            if (show) {
+                modal.classList.remove('hidden');
+                document.getElementById('pc-name').focus();
+            } else {
+                modal.classList.add('hidden');
+                document.getElementById('add-form').reset();
+                document.getElementById('pc-port').value = "4455";
+            }
+        }
+
+        function formatTime(seconds) {
+            const h = Math.floor(seconds / 3600).toString().padStart(2, '0');
+            const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
+            const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+            return `${h}:${m}:${s}`;
+        }
+
+        // The core Class managing individual OBS connections
+        class OBSNode {
+            constructor(config) {
+                this.id = config.id || crypto.randomUUID();
+                this.name = config.name;
+                this.ip = config.ip;
+                this.port = config.port;
+                this.password = config.password;
+                
+                // OBS WebSocket specific tracking
+                this.obs = new OBSWebSocket();
+                this.wsConnected = false;
+                this.isStreaming = false;
+                this.pollInterval = null;
+                
+                // Metrics tracking for Bitrate calculation
+                this.lastBytes = 0;
+                this.lastTime = Date.now();
+                this.totalBytes = 0;
+
+                this.createCard();
+                this.connect();
+            }
+
+            createCard() {
+                const template = document.getElementById('card-template');
+                const clone = template.content.cloneNode(true);
+                
+                this.cardEl = clone.querySelector('div');
+                this.cardEl.id = `node-${this.id}`;
+                
+                // Bind UI elements to this instance for fast updating
+                this.ui = {
+                    name: this.cardEl.querySelector('.pc-name-display'),
+                    ip: this.cardEl.querySelector('.pc-ip-display'),
+                    strip: this.cardEl.querySelector('.connection-strip'),
+                    badge: this.cardEl.querySelector('.connection-badge'),
+                    statusDot: this.cardEl.querySelector('.status-dot'),
+                    statusText: this.cardEl.querySelector('.status-text'),
+                    streamDot: this.cardEl.querySelector('.stream-dot'),
+                    streamText: this.cardEl.querySelector('.stream-text'),
+                    uptime: this.cardEl.querySelector('.uptime-display'),
+                    bitrate: this.cardEl.querySelector('.metric-bitrate'),
+                    dropped: this.cardEl.querySelector('.metric-dropped'),
+                    congestionText: this.cardEl.querySelector('.metric-congestion'),
+                    congestionBar: this.cardEl.querySelector('.congestion-bar'),
+                    reconnectWarn: this.cardEl.querySelector('.reconnect-warning'),
+                    deleteBtn: this.cardEl.querySelector('.delete-btn')
+                };
+
+                // Set initial texts
+                this.ui.name.textContent = this.name;
+                this.ui.ip.textContent = `${this.ip}:${this.port}`;
+                
+                // Bind delete
+                this.ui.deleteBtn.addEventListener('click', () => removeNode(this.id));
+
+                document.getElementById('fleet-grid').appendChild(this.cardEl);
+                lucide.createIcons({ root: this.cardEl });
+            }
+
+            async connect() {
+                this.setWSStatus('connecting');
+                try {
+                    // OBS WS v5 connection syntax
+                    await this.obs.connect(`ws://${this.ip}:${this.port}`, this.password, { rpcVersion: 1 });
+                    this.wsConnected = true;
+                    this.setWSStatus('connected');
+                    this.setupEventListeners();
+                    this.checkInitialStreamStatus();
+                } catch (error) {
+                    console.error(`[${this.name}] Connection failed:`, error);
+                    this.setWSStatus('disconnected');
+                    // Attempt auto-reconnect every 10 seconds if it's completely down
+                    setTimeout(() => { if (!this.wsConnected) this.connect(); }, 10000);
+                }
+            }
+
+            setupEventListeners() {
+                this.obs.on('ConnectionClosed', () => {
+                    this.wsConnected = false;
+                    this.setWSStatus('disconnected');
+                    this.setStreamStatus(false);
+                    // Attempt auto-reconnect
+                    setTimeout(() => { if (!this.wsConnected) this.connect(); }, 5000);
+                });
+
+                this.obs.on('StreamStateChanged', (data) => {
+                    this.setStreamStatus(data.outputActive);
+                });
+            }
+
+            async checkInitialStreamStatus() {
+                try {
+                    const status = await this.obs.call('GetStreamStatus');
+                    this.setStreamStatus(status.outputActive);
+                } catch (err) {
+                    console.log(`[${this.name}] Stream status check failed. Instance might not be ready or not streaming.`, err);
+                }
+            }
+
+            setWSStatus(state) {
+                if (state === 'connecting') {
+                    this.ui.strip.className = 'absolute top-0 left-0 w-full h-1 transition-colors duration-300 bg-yellow-500';
+                    this.ui.badge.className = 'text-xs font-semibold px-2 py-1 rounded-full flex items-center gap-1.5 transition-colors duration-300 bg-yellow-500/20 text-yellow-400';
+                    this.ui.statusDot.className = 'w-2 h-2 rounded-full bg-yellow-400 pulsing-dot';
+                    this.ui.statusText.textContent = 'Connecting...';
+                } else if (state === 'connected') {
+                    this.ui.strip.className = 'absolute top-0 left-0 w-full h-1 transition-colors duration-300 bg-emerald-500';
+                    this.ui.badge.className = 'text-xs font-semibold px-2 py-1 rounded-full flex items-center gap-1.5 transition-colors duration-300 bg-emerald-500/20 text-emerald-400';
+                    this.ui.statusDot.className = 'w-2 h-2 rounded-full bg-emerald-400';
+                    this.ui.statusText.textContent = 'Connected';
+                } else {
+                    this.ui.strip.className = 'absolute top-0 left-0 w-full h-1 transition-colors duration-300 bg-red-500';
+                    this.ui.badge.className = 'text-xs font-semibold px-2 py-1 rounded-full flex items-center gap-1.5 transition-colors duration-300 bg-red-500/20 text-red-400';
+                    this.ui.statusDot.className = 'w-2 h-2 rounded-full bg-red-500';
+                    this.ui.statusText.textContent = 'Offline';
+                    this.resetMetrics();
+                }
+            }
+
+            setStreamStatus(isActive) {
+                this.isStreaming = isActive;
+                if (isActive) {
+                    this.ui.streamDot.className = 'w-3 h-3 rounded-full bg-red-500 pulsing-dot shadow-[0_0_8px_rgba(239,68,68,0.8)]';
+                    this.ui.streamText.className = 'font-bold text-sm text-red-400';
+                    this.ui.streamText.textContent = 'LIVE';
+                    this.ui.uptime.classList.remove('hidden');
+                    
+                    // Reset metric tracking basis
+                    this.lastBytes = 0;
+                    this.lastTime = Date.now();
+                    
+                    if (!this.pollInterval) {
+                        this.pollInterval = setInterval(() => this.pollStreamData(), 2000); // Poll every 2 seconds
+                    }
+                } else {
+                    this.ui.streamDot.className = 'w-3 h-3 rounded-full bg-slate-600';
+                    this.ui.streamText.className = 'font-medium text-sm text-slate-400';
+                    this.ui.streamText.textContent = 'Not Streaming';
+                    this.ui.uptime.classList.add('hidden');
+                    this.ui.reconnectWarn.classList.add('hidden');
+                    
+                    if (this.pollInterval) {
+                        clearInterval(this.pollInterval);
+                        this.pollInterval = null;
+                    }
+                    this.resetMetrics();
+                }
+            }
+
+            async pollStreamData() {
+                if (!this.wsConnected || !this.isStreaming) return;
+
+                try {
+                    const data = await this.obs.call('GetStreamStatus');
+                    
+                    // Safety check, sometimes event lags
+                    if (!data.outputActive) {
+                        this.setStreamStatus(false);
+                        return;
+                    }
+
+                    // 1. Reconnection Warning (OBS dropped RTMP but is trying to restore)
+                    if (data.outputReconnecting) {
+                        this.ui.reconnectWarn.classList.remove('hidden');
+                    } else {
+                        this.ui.reconnectWarn.classList.add('hidden');
+                    }
+
+                    // 2. Uptime
+                    // convert timestamp string or ms duration to seconds
+                    let durationSecs = 0;
+                    if(data.outputDuration) {
+                       durationSecs = Math.floor(data.outputDuration / 1000); 
+                    } else if (data.outputTimecode) {
+                        // fallback if timecode is provided instead
+                       const tc = data.outputTimecode.split(':');
+                       if(tc.length >= 3) {
+                           durationSecs = (+tc[0]) * 3600 + (+tc[1]) * 60 + (+tc[2].split('.')[0]);
+                       }
+                    }
+                    this.ui.uptime.textContent = formatTime(durationSecs);
+
+                    // 3. Calculate Bitrate (kbps)
+                    const now = Date.now();
+                    const currentBytes = data.outputBytes || 0;
+                    
+                    if (this.lastBytes > 0 && currentBytes >= this.lastBytes) {
+                        const timeDiffSecs = (now - this.lastTime) / 1000;
+                        const byteDiff = currentBytes - this.lastBytes;
+                        const bitsPerSec = (byteDiff * 8) / timeDiffSecs;
+                        const kbps = Math.round(bitsPerSec / 1000);
+                        
+                        this.ui.bitrate.textContent = kbps;
+                        this.ui.bitrate.className = `metric-bitrate ${kbps > 1000 ? 'text-white' : 'text-yellow-400'}`;
+                    }
+                    
+                    this.lastBytes = currentBytes;
+                    this.lastTime = now;
+
+                    // 4. Dropped Frames (Network specific)
+                    const dropped = data.outputSkippedFrames || 0;
+                    this.ui.dropped.textContent = dropped;
+                    if (dropped === 0) {
+                        this.ui.dropped.className = 'metric-dropped text-emerald-400';
+                    } else if (dropped < 100) {
+                        this.ui.dropped.className = 'metric-dropped text-yellow-400';
+                    } else {
+                        this.ui.dropped.className = 'metric-dropped text-red-500';
+                    }
+
+                    // 5. Congestion
+                    const congestionVal = data.outputCongestion || 0;
+                    // outputCongestion is 0.0 to 1.0 (or sometimes >1.0 if severely backed up)
+                    let congestionPercent = Math.min(Math.round(congestionVal * 100), 100); 
+                    
+                    this.ui.congestionText.textContent = `${congestionPercent}%`;
+                    this.ui.congestionBar.style.width = `${congestionPercent}%`;
+
+                    if (congestionPercent < 10) {
+                        this.ui.congestionText.className = 'metric-congestion text-emerald-400';
+                        this.ui.congestionBar.className = 'congestion-bar h-1.5 rounded-full transition-all duration-500 bg-emerald-500';
+                    } else if (congestionPercent < 50) {
+                        this.ui.congestionText.className = 'metric-congestion text-yellow-400';
+                        this.ui.congestionBar.className = 'congestion-bar h-1.5 rounded-full transition-all duration-500 bg-yellow-500';
+                    } else {
+                        this.ui.congestionText.className = 'metric-congestion text-red-500 pulsing-dot';
+                        this.ui.congestionBar.className = 'congestion-bar h-1.5 rounded-full transition-all duration-500 bg-red-500';
+                    }
+
+                } catch (err) {
+                    console.error(`[${this.name}] Polling Error:`, err);
+                }
+            }
+
+            resetMetrics() {
+                this.ui.bitrate.textContent = '0';
+                this.ui.bitrate.className = 'metric-bitrate text-slate-500';
+                
+                this.ui.dropped.textContent = '0';
+                this.ui.dropped.className = 'metric-dropped text-slate-500';
+                
+                this.ui.congestionText.textContent = '0%';
+                this.ui.congestionText.className = 'metric-congestion text-slate-500';
+                this.ui.congestionBar.style.width = '0%';
+                this.ui.congestionBar.className = 'congestion-bar h-1.5 rounded-full transition-all duration-500 bg-slate-700';
+            }
+
+            destroy() {
+                if (this.pollInterval) clearInterval(this.pollInterval);
+                if (this.wsConnected) this.obs.disconnect();
+                this.cardEl.remove();
+            }
+        }
+
+        // Form Handling
+        function handleAddForm(e) {
+            e.preventDefault();
+            
+            const config = {
+                id: crypto.randomUUID(),
+                name: document.getElementById('pc-name').value,
+                ip: document.getElementById('pc-ip').value,
+                port: document.getElementById('pc-port').value,
+                password: document.getElementById('pc-password').value
+            };
+
+            // Save config
+            savedConfigs.push(config);
+            localStorage.setItem('obs_fleet_configs', JSON.stringify(savedConfigs));
+
+            // Instantiate
+            fleet.push(new OBSNode(config));
+
+            updateEmptyState();
+            toggleModal(false);
+        }
+
+        function removeNode(id) {
+            if(!confirm("Are you sure you want to remove this PC from the monitor?")) return;
+
+            // Find and destroy instance
+            const index = fleet.findIndex(n => n.id === id);
+            if (index > -1) {
+                fleet[index].destroy();
+                fleet.splice(index, 1);
+            }
+
+            // Remove from storage
+            savedConfigs = savedConfigs.filter(c => c.id !== id);
+            localStorage.setItem('obs_fleet_configs', JSON.stringify(savedConfigs));
+
+            updateEmptyState();
+        }
+
+        function updateEmptyState() {
+            const emptyState = document.getElementById('empty-state');
+            const grid = document.getElementById('fleet-grid');
+            if (savedConfigs.length === 0) {
+                emptyState.classList.remove('hidden');
+                grid.classList.add('hidden');
+            } else {
+                emptyState.classList.add('hidden');
+                grid.classList.remove('hidden');
+            }
+        }
+
+        // Boot
+        function init() {
+            if (savedConfigs.length > 0) {
+                savedConfigs.forEach(config => {
+                    fleet.push(new OBSNode(config));
+                });
+            }
+            updateEmptyState();
+        }
+
+        // Start App
+        init();
+
+    </script>
+</body>
+</html>
